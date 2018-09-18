@@ -1,8 +1,5 @@
-# fit integrated model with data on individual growth and
-#   population size distributions
-
-# optional: set working directory
-setwd('~/Dropbox/research/integrated/')
+# fit integrated model to data on individual growth, population size distributions,
+#   and recapture histories
 
 # load packages
 library(integrated)
@@ -15,7 +12,7 @@ classes <- length(breaks) - 1
 replicates <- 1
 
 # load population data
-pop_data <- read.csv('../integrated.pkg/data/survey-data.csv',
+pop_data <- read.csv('./data/pop-data.csv',
                      row.names = 1, stringsAsFactors = FALSE)
 pop_data <- pop_data[pop_data$species == 'murraycod', ]
 pop_data <- pop_data[!is.na(pop_data$weight), ]
@@ -25,13 +22,13 @@ pop_data <- data.frame(time = pop_data$year,
                        age = pop_data$age)
 
 # load growth data
-growth_data <- read.csv('../integrated.pkg/data/MC.csv')
+growth_data <- read.csv('./data/growth-data.csv')
 growth_data <- data.frame(growth = growth_data$Otolith_growth,
                           id = growth_data$ID,
                           year = growth_data$Growth_year)
 
 # load CMR data
-cmr_data <- read.csv('../integrated.pkg/data/cmr-data.csv',
+cmr_data <- read.csv('./data/cmr-data.csv',
                      row.names = 1, stringsAsFactors = FALSE)
 cmr_data <- cmr_data[cmr_data$code == 'MC', ]
 cmr_data <- data.frame(id = cmr_data$idfish,
@@ -43,9 +40,13 @@ cmr_data <- cmr_data[cmr_data$id != 0, ]
 # setup parallel run
 plan(cluster)
 
-opt_est <- vector('list', length = length(unique(pop_data$site)))
+# need somewhere to save fitted models
 samples <- vector('list', length = length(unique(pop_data$site)))
+
+# run through each river separately
 for (i in seq_along(samples)) {
+  
+  # subset data to a single river
   pop_data_sub <- pop_data[pop_data$site == unique(pop_data$site)[i], ]
   
   # build process model
@@ -77,28 +78,27 @@ for (i in seq_along(samples)) {
                                       process_link = 'individual_growth',
                                       settings = list(nbreaks = (classes + 1)))
   
+  # combine data modules to create a joint likelihood object and return model parameters
   params <- integrated_model(integrated_process = mpm_process,
                              abund_data_module,
                              size_data_module,
                              cmr_data_module)
   
+  # compile the model
   mod <- greta::model(params)
   
-  # opt_est[[i]] <- greta::opt(mod, max_iterations = 5000)
+  # sample from the compiled model using futures::plan() defined above
   samples[[i]] <- greta::mcmc(mod, n_samples = 20000, warmup = 10000,
                               thin = 3, chains = 3)
   
 }
 
+# summarise model outputs for each river
 mean_params <- vector('list', length = length(samples))
-mean_params2 <- vector('list', length = length(samples))
 mu <- vector('list', length = length(samples))
 mat_est <- vector('list', length = length(samples))
 surv_vec <- vector('list', length = length(samples))
 dens_param <- rep(NA, length(samples))
-mat_est2 <- vector('list', length = length(samples))
-surv_vec2 <- vector('list', length = length(samples))
-dens_param2 <- rep(NA, length(samples))
 dens_all <- vector('list', length = length(samples))
 for (i in seq_along(samples)) {
   
@@ -126,22 +126,10 @@ for (i in seq_along(samples)) {
   
   mu[[i]] <- mean_params[[i]][((2 * classes + 3) * classes + 2):(length(mean_params[[i]]))]
 
-  # mean_params2[[i]] <- opt_est[[i]]$par
-  # 
-  # surv_vec2[[i]] <- mean_params2[[i]][(2 * classes * classes + 1):(2 * classes * classes + classes)]
-  # 
-  # mat_est2[[i]] <- sweep(matrix(mean_params2[[i]][1:(classes * classes)],
-  #                              ncol = classes, byrow = FALSE),
-  #                       2, surv_vec[[i]], '*') +
-  #   matrix(mean_params2[[i]][(classes * classes + (1:(classes * classes)))],
-  #          ncol = classes, byrow = FALSE)
-  # 
-  # dens_param2[i] <- mean_params2[[i]][((2 * classes + 3) * classes + 1)]
-  # 
 }
 
-pdf(file = '../conferences/gordon2018/figures/fee-ms-Fig2_new_survival.pdf',
-    height = 7, width = 6)
+# plot the estimated transition matrices for each river
+pdf(file = '.outputs/MS-Fig1.pdf', height = 7, width = 6)
 system_lab <- c('Campaspe', 'Loddon', 'Broken', 'Goulburn',
                 'Ovens', 'Murray')
 size_vec <- breaks[c(1, 3, 5, 7, 9)] + round(diff(breaks)[c(1, 3, 5, 7, 9)] / 2)
@@ -174,7 +162,7 @@ oceanmap::set.colorbar(cbx = c(0, 1), cby = c(0.09, 0.14),
                        cb.ticks.ypos = 0.04)
 dev.off()
 
-# projections
+# projection helper function
 bh_fun <- function(mat, n, dens_param, init = NULL) {
   
   out <- matrix(NA, nrow = nrow(mat), ncol = n)
@@ -189,13 +177,13 @@ bh_fun <- function(mat, n, dens_param, init = NULL) {
   
 }
 
+# calculate fitted and observed values and project the populations forward in time
 nsim <- 100
 ntime <- 10
 out <- vector('list', length = length(mat_est))
 real_abund <- vector('list', length = length(mat_est))
 fitted_abund <- vector('list', length = length(mat_est))
 mu_all <- vector('list', length = length(mat_est))
-r2_vals <- rep(NA, length(mat_est))
 bayes_r2 <- matrix(NA, nrow = length(mat_est), ncol = nsim)
 for (i in seq_along(mat_est)) {
   pop_data_sub <- pop_data[pop_data$site == unique(pop_data$site)[i], ]
@@ -207,7 +195,6 @@ for (i in seq_along(mat_est)) {
   fitted_abund[[i]] <- apply(matrix(mu[[i]], nrow = nrow(real_abund[[i]])),
                              2, sum)
   
-  r2_vals[i] <- cor(c(real_abund[[i]]), c(mu[[i]])) ** 2
   out[[i]] <- vector('list', length = nsim)
   mu_all[[i]] <- vector('list', length = nsim)
   for (j in seq_len(nsim)) {
@@ -236,14 +223,16 @@ for (i in seq_along(mat_est)) {
   }
 }
 
-pdf(file = '../conferences/gordon2018/figures/fee-ms-Fig3_new_survival.pdf',
-    height = 7, width = 7)
+# save Bayesian R2 values
+write.csv(bayes_r2, file = './outputs/bayes_r2_values.csv')
+
+# plot the projected population trajectories
+pdf(file = './outputs/MS-Fig2.pdf', height = 7, width = 7)
 par(mfrow = c(3, 2), mar = c(4.1, 5.1, 2.8, 1.5))
 for (i in seq_along(mat_est)) {
   
   pop_data_sub <- pop_data[pop_data$site == unique(pop_data$site)[i], ]
   x_vals <- c(unique(pop_data_sub$time), (max(pop_data_sub$time) + 1):(max(pop_data_sub$time) + 10))
-#  x_vals <- c(min(pop_data_sub$time):(min(pop_data_sub$time) + ncol(real_abund[[i]]) + ntime - 1))
   sim_vals <- sapply(out[[i]], function(x) apply(x, 2, sum))
   plot_mean <- c(apply(real_abund[[i]], 2, sum),
                  apply(sim_vals, 1, mean))
@@ -294,11 +283,8 @@ for (i in seq_along(mat_est)) {
 }
 dev.off()
 
-write.csv(bayes_r2, file = '../conferences/gordon2018/figures/bayes_r2_vals_new_surv.csv')
-write.csv(r2_vals, file = '../conferences/gordon2018/figures/pearson_r2_vals_new_surv.csv')
-
-pdf(file = '../conferences/gordon2018/figures/fee-ms-Fig1_new_survival.pdf',
-    height = 7, width = 7)
+# plot the fitted and observed values
+pdf(file = './outputs/MS-FigS1.pdf', height = 7, width = 7)
 par(mfrow = c(3, 2), mar = c(4.1, 5.1, 2.8, 1.5))
 for (i in seq_along(real_abund)) {
   real_tmp <- apply(real_abund[[i]], 2, sum)
@@ -332,31 +318,8 @@ for (i in seq_along(real_abund)) {
 }
 dev.off()
 
-
-diag_range <- function(x, digits = 2) {
-  
-  diag_range <- range(diag(x))
-  
-  x_lower1 <- rep(NA, ncol(x) - 1)
-  x_lower2 <- rep(NA, ncol(x) - 2)
-  for (i in seq_len(ncol(x) - 1)) {
-    x_lower1[i] <- x[(i + 1), i]
-    if (i < (ncol(x) - 1))
-      x_lower2[i] <- x[(i + 2), i]
-  }
-  lower1_range <- range(x_lower1)
-  lower2_range <- range(x_lower2)
-  
-  out <- list(diag = round(diag_range, digits),
-              lower1 = round(lower1_range, digits),
-              lower2 = round(lower2_range, digits))
-  
-  out
-  
-}
-
-pdf(file = '../conferences/gordon2018/figures/fee-ms-FigSX_new_survival.pdf',
-    width = 7, height = 7)
+# plot the effects of density dependence in each river
+pdf(file = './outputs/MS-FigS2.pdf', width = 7, height = 7)
 par(mfrow = c(3, 2), mar = c(5.1, 4.8, 2.8, 0.5))
 x <- seq(0, 2000, by = 1)
 plot_vals <- vector('list', length = length(dens_all))
@@ -367,7 +330,6 @@ for (i in seq_along(dens_param)) {
     plot_vals[[i]][j, ] <- 1 / (1 + dens_sum[j] * x)
   }
 }
-# yadj <- c(0, 0, -0.025, 0, 0, 0.035)
 for (i in seq_along(dens_all)) {
   plot(plot_vals[[i]][1, ] ~ x, 
        type = "n", bty = "l", las = 1,
@@ -378,9 +340,6 @@ for (i in seq_along(dens_all)) {
           border = NA, col = col_pal_sub[1])
   lines(plot_vals[[i]][1, ] ~ x,
         lwd = 2, col = col_pal_main[1])
-  # text(2000, plot_vals[[i]][1, length(x)] + yadj[i], system_lab[i],
-  #      xpd = TRUE,
-  #      pos = 4)
   mtext(system_lab[i], side = 3, line = 0.7, adj = 1, cex = 1.2)
 }
 dev.off()
