@@ -4,6 +4,7 @@
 # load packages
 library(integrated)
 library(greta)
+library(greta.dynamics)
 library(future)
 
 # model settings
@@ -42,12 +43,16 @@ plan(cluster)
 
 # need somewhere to save fitted models
 samples <- vector('list', length = length(unique(pop_data$site)))
+test_data <- samples
 
 # run through each river separately
 for (i in seq_along(samples)) {
   
   # subset data to a single river
   pop_data_sub <- pop_data[pop_data$site == unique(pop_data$site)[i], ]
+  
+  pop_data_sub <- pop_data_sub[pop_data_sub$time < 2017, ]
+  test_data[[i]] <- pop_data_sub[pop_data_sub$time >= 2017, ]
   
   # build process model
   mpm_process <- integrated_process(type = 'MPM',
